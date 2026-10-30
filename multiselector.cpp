@@ -28,8 +28,10 @@
 #include <fcitx/text.h>
 #include <fcitx/userinterface.h>
 #include <algorithm>
+#include <exception>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -39,6 +41,7 @@ using namespace fcitx;
 constexpr int kRows = 4;
 constexpr int kCols = 8;
 constexpr int kPage = kRows * kCols;
+constexpr int kMaxCandidates = 256;
 // Cells are padded to the widest word on the page, measured in half-width
 // units (CJK = 2, Latin = 1), so columns line up; capped at this many units.
 constexpr int kMaxCellWidth = 12;
@@ -102,7 +105,8 @@ private:
 // marked with a HighLight text segment instead of a whole-row highlight.
 class GridCandidateList : public CandidateList {
 public:
-    explicit GridCandidateList(std::vector<Text> rows) {
+    GridCandidateList(std::vector<Text> rows, int cursorRow)
+        : cursorRow_(cursorRow) {
         for (auto &row : rows) {
             words_.push_back(
                 std::make_unique<DisplayOnlyCandidateWord>(std::move(row)));
@@ -114,7 +118,7 @@ public:
         return *words_.at(idx);
     }
     int size() const override { return static_cast<int>(words_.size()); }
-    int cursorIndex() const override { return -1; }
+    int cursorIndex() const override { return cursorRow_; }
     CandidateLayoutHint layoutHint() const override {
         return CandidateLayoutHint::Vertical;
     }
@@ -122,6 +126,7 @@ public:
 private:
     Text empty_;
     std::vector<std::unique_ptr<CandidateWord>> words_;
+    int cursorRow_;
 };
 
 class MultiSelector : public AddonInstance {
@@ -156,19 +161,54 @@ private:
         ic_.unwatch();
         orig_.reset();
         grid_ = nullptr;
+        total_ = 0;
     }
 
-    int total() const { return orig_->toBulk()->totalSize(); }
+    int countCandidates(BulkCandidateList *bulk) const {
+        int count = bulk->totalSize();
+        if (count >= 0) {
+            return count;
+        }
+        for (count = 0; count < kMaxCandidates; ++count) {
+            try {
+                (void)bulk->candidateFromAll(count);
+            } catch (const std::exception &) {
+                return count;
+            }
+        }
+        return count;
+    }
+
+    int total() const { return total_; }
+
+    void consumeKey(KeyEvent &event) {
+        suppressedReleases_.insert(event.key().sym());
+        event.filterAndAccept();
+    }
 
     void onKey(KeyEvent &event) {
         auto *ic = event.inputContext();
+        if (event.isRelease()) {
+            const auto sym = event.key().sym();
+            bool consumed = active(ic);
+            consumed = suppressedReleases_.erase(sym) > 0 || consumed;
+            if (sym == expansionKey_) {
+                expansionKey_ = FcitxKey_None;
+            }
+            if (consumed) {
+                event.filterAndAccept();
+            }
+            return;
+        }
+        if (event.key().sym() == expansionKey_ &&
+            suppressedReleases_.contains(expansionKey_)) {
+            consumeKey(event);
+            return;
+        }
         if (!active(ic)) {
             // The engine may have replaced the grid with a fresh list.
             if (grid_) {
                 clear();
-            }
-            if (event.isRelease()) {
-                return;
             }
             if (event.key().check(FcitxKey_Left) ||
                 event.key().check(FcitxKey_Right)) {
@@ -182,7 +222,7 @@ private:
             if (!list || list->empty() || !list->toBulk()) {
                 return;
             }
-            int totalSize = list->toBulk()->totalSize();
+            int totalSize = countCandidates(list->toBulk());
             if (totalSize <= 1) {
                 return;
             }
@@ -194,14 +234,12 @@ private:
                 start = pageable->currentPage() * list->size();
             }
             orig_ = std::move(list);
+            total_ = totalSize;
             ic_ = ic->watch();
             cursor_ = std::min(start, totalSize - 1);
-            event.filterAndAccept();
+            expansionKey_ = event.key().sym();
+            consumeKey(event);
             render(ic);
-            return;
-        }
-
-        if (event.isRelease()) {
             return;
         }
         const auto &key = event.key();
@@ -210,20 +248,20 @@ private:
         int col = cursor_ % kCols;
 
         if (key.check(FcitxKey_Escape)) {
-            event.filterAndAccept();
+            consumeKey(event);
             collapse(ic);
             return;
         }
         if (key.check(FcitxKey_Return) || key.check(FcitxKey_KP_Enter) ||
             key.check(FcitxKey_space)) {
-            event.filterAndAccept();
+            consumeKey(event);
             commit(ic, cursor_);
             return;
         }
         if (key.isDigit() && !key.hasModifier()) {
             int digit = key.digit();
             if (digit >= 1 && digit <= kCols) {
-                event.filterAndAccept();
+                consumeKey(event);
                 int idx = cursor_ - col + digit - 1;
                 if (idx < n) {
                     commit(ic, idx);
@@ -246,7 +284,7 @@ private:
             }
         } else if (key.check(FcitxKey_Up)) {
             if (cursor_ < kCols) {
-                event.filterAndAccept();
+                consumeKey(event);
                 collapse(ic);
                 return;
             }
@@ -268,14 +306,14 @@ private:
             collapse(ic);
             return;
         }
-        event.filterAndAccept();
+        consumeKey(event);
         cursor_ = std::clamp(next, 0, n - 1);
         render(ic);
     }
 
     void render(InputContext *ic) {
         auto *bulk = orig_->toBulk();
-        const int n = bulk->totalSize();
+        const int n = total();
         const int pageStart = cursor_ / kPage * kPage;
         const int pageEnd = std::min(pageStart + kPage, n);
 
@@ -292,7 +330,9 @@ private:
             for (int i = rowStart; i < std::min(rowStart + kCols, pageEnd);
                  i++) {
                 auto word = bulk->candidateFromAll(i).text().toString();
-                std::string cell = std::to_string(i - rowStart + 1) + ". " + word;
+                const bool selected = i == cursor_;
+                std::string cell = selected ? "> " : "  ";
+                cell += std::to_string(i - rowStart + 1) + ". " + word;
                 int pad = width - displayWidth(word);
                 for (; pad >= 2; pad -= 2) {
                     cell += kFullWidthSpace;
@@ -300,7 +340,7 @@ private:
                 if (pad == 1) {
                     cell += kHalfWidthSpace;
                 }
-                if (i == cursor_) {
+                if (selected) {
                     row.append(cell, TextFormatFlag::HighLight);
                 } else {
                     row.append(cell);
@@ -317,7 +357,8 @@ private:
                              std::to_string(pages))
                       : Text());
 
-        auto grid = std::make_unique<GridCandidateList>(std::move(rows));
+        auto grid = std::make_unique<GridCandidateList>(
+            std::move(rows), (cursor_ - pageStart) / kCols);
         grid_ = grid.get();
         ic->inputPanel().setCandidateList(std::move(grid));
         ic->updateUserInterface(UserInterfaceComponent::InputPanel);
@@ -342,24 +383,54 @@ private:
             return;
         }
         auto *movable = list->toCursorMovable();
-        if (!movable) {
+        const bool right = event.key().check(FcitxKey_Right);
+        if (movable) {
+            consumeKey(event);
+            // Stop at either end instead of wrapping around the whole list.
+            if (auto *bulkCursor = list->toBulkCursor();
+                bulkCursor && list->toBulk()) {
+                const int cursor = bulkCursor->globalCursorIndex();
+                const auto *pageable = list->toPageable();
+                const int last = pageable && !pageable->hasNext()
+                                     ? (pageable->currentPage() + 1) *
+                                               list->size() -
+                                           1
+                                     : -1;
+                if ((right && last >= 0 && cursor >= last) ||
+                    (!right && cursor == 0)) {
+                    return;
+                }
+            }
+            if (right) {
+                movable->nextCandidate();
+            } else {
+                movable->prevCandidate();
+            }
+            ic->updateUserInterface(UserInterfaceComponent::InputPanel);
             return;
         }
-        const bool right = event.key().check(FcitxKey_Right);
-        event.filterAndAccept();
-        // Stop at either end instead of wrapping around the whole list.
-        if (auto *bulkCursor = list->toBulkCursor(); bulkCursor && list->toBulk()) {
-            const int cursor = bulkCursor->globalCursorIndex();
-            const int last = list->toBulk()->totalSize() - 1;
-            if ((right && last >= 0 && cursor >= last) || (!right && cursor == 0)) {
-                return;
-            }
+
+        auto *bulkCursor = list->toBulkCursor();
+        auto *bulk = list->toBulk();
+        if (!bulkCursor || !bulk) {
+            return;
         }
-        if (right) {
-            movable->nextCandidate();
-        } else {
-            movable->prevCandidate();
+        int cursor = bulkCursor->globalCursorIndex();
+        const auto *pageable = list->toPageable();
+        const int page = pageable ? pageable->currentPage() : 0;
+        if (cursor < 0) {
+            cursor = page * list->size() + std::max(list->cursorIndex(), 0);
         }
+        const int next = cursor + (right ? 1 : -1);
+        // At either end, let the engine handle the key (for example, moving
+        // the caret in Rime's preedit string).
+        const int pageEnd = (page + 1) * list->size();
+        if (next < 0 ||
+            (right && pageable && !pageable->hasNext() && next >= pageEnd)) {
+            return;
+        }
+        consumeKey(event);
+        bulkCursor->setGlobalCursorIndex(next);
         ic->updateUserInterface(UserInterfaceComponent::InputPanel);
     }
 
@@ -391,6 +462,9 @@ private:
     std::shared_ptr<CandidateList> orig_;
     const CandidateList *grid_ = nullptr;
     int cursor_ = 0;
+    int total_ = 0;
+    std::unordered_set<KeySym> suppressedReleases_;
+    KeySym expansionKey_ = FcitxKey_None;
 };
 
 class MultiSelectorFactory : public AddonFactory {

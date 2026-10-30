@@ -54,6 +54,26 @@ cd fcitx5-multiselector
 
 插件只往用户目录装两个文件：`~/.local/lib/fcitx5/multiselector.so` 和 `~/.local/share/fcitx5/addon/multiselector.conf`。安装时不需要 sudo，也不改系统文件。
 
+### 候选栏与方向键设置
+
+插件默认从横排候选栏展开网格。如果 Classic UI 当前设为竖排，可在 `~/.config/fcitx5/conf/classicui.conf` 中设为横排：
+
+```ini
+VerticalCandidateList=False
+```
+
+如果 Fcitx 全局分页快捷键占用了 ↑/↓，可在 `~/.config/fcitx5/config` 中把它们改为组合键，让方向键交给候选导航：
+
+```ini
+[Hotkey/PrevPage]
+0=Control+Alt+Up
+
+[Hotkey/NextPage]
+0=Control+Alt+Down
+```
+
+保留已有配置文件中的其他选项。修改后运行 `fcitx5-remote -r` 重新加载配置。
+
 ### Bazzite / Fedora Atomic（不可变系统）
 
 本机不能直接装编译工具时，可以在 toolbox 里编译。`install.sh` 发现本机没有 cmake，会自动使用名为 `fcitx5-build` 的 toolbox：
@@ -92,9 +112,10 @@ toolbox run -c fcitx5-build sudo dnf install -y fcitx5-devel cmake gcc-c++
 | Bazzite（Fedora 44）+ KDE Plasma Wayland + fcitx5 5.1.22 拼音 | ✅ | 作者日常使用；安装用的是上面的 toolbox 方法 |
 | Fedora 44（fcitx5 5.1.23）| ✅ | 在干净的容器里按本文第 1–4 步安装，用虚拟 X11 显示逐步截图核对：展开、移动、翻页、收起、选词上屏、卸载 |
 | Debian 13（fcitx5 5.1.12）| ✅ | 同上 |
+| Ubuntu 26.04（GNOME Wayland、fcitx5 5.1.19、Rime 5.1.13）| ✅ | 手动验证展开、方向键选择和选词上屏 |
 | Ubuntu 24.04（fcitx5 5.1.7）及更低版本 | ❌ | 编译失败，不支持 |
 | 其他发行版、GNOME / Sway 等其他桌面 | 未测试 | |
-| Rime 等其他 fcitx5 输入法 | 未测试 | |
+| 其他未列出的 Rime 环境 | 未测试 | |
 | kimpanel 等非经典界面（classicui）的候选框 | 未测试 | |
 
 v0.0.3 新增的一行 ← → 选词：在 Fedora 44（fcitx5 5.1.23）的隔离虚拟显示里逐项核对过（选词、跨页、两端停住、空格上屏、接着按 ↓ 展开）；Debian 13 只验证了能编译，其他环境未测试。
@@ -159,8 +180,24 @@ so picking a word that is not on the first page means paging blindly. Sogou and
 WeType let you see 30+ candidates at once; this addon does the same on fcitx5.
 
 It is a pure view over the input method's own candidate list, so engine
-behaviour (e.g. user history) is unchanged and no system files
-or IME settings are modified. Requires fcitx5 ≥ 5.1.12. Build and install with
+behaviour (e.g. user history) is unchanged and the installer does not modify
+system files or IME settings. Requires fcitx5 ≥ 5.1.12. Build and install with
 `./install.sh`; remove with `./uninstall.sh`. Used daily on KDE Plasma Wayland
 with fcitx5 Pinyin (Bazzite / Fedora 44); the install steps were tested end to
-end in clean Fedora 44 and Debian 13 containers. Other setups are untested.
+end in clean Fedora 44 and Debian 13 containers. Ubuntu 26.04 with GNOME
+Wayland, fcitx5 5.1.19, and Rime 5.1.13 was also manually verified; other
+setups are untested.
+
+If Classic UI is set to a vertical candidate list, set
+`VerticalCandidateList=False` in `~/.config/fcitx5/conf/classicui.conf` for the
+one-line collapsed view. If Fcitx's global page hotkeys consume Up / Down, move
+them to other keys in `~/.config/fcitx5/config` so the addon can receive arrow
+navigation events. For example:
+
+```ini
+[Hotkey/PrevPage]
+0=Control+Alt+Up
+
+[Hotkey/NextPage]
+0=Control+Alt+Down
+```

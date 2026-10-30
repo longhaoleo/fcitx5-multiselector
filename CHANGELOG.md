@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Support input methods that report an unknown candidate count, including Rime.
+- Consume key releases for handled grid keys and ignore repeated Down events while the grid is opening.
+- Show a visible marker and row highlight for the selected grid candidate.
+- Document Classic UI layout and global arrow-key settings that can conflict with the addon.
+
 ## v0.0.3 — 2026-10-07
 
 - 一行候选时，← → 可以选词，空格上屏高亮的词；到本页末尾自动翻页，到第一个或最后一个就停
